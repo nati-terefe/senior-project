@@ -8,6 +8,11 @@ dependencies:
   go_router: ^14.2.0
   flutter_svg: ^2.0.10+1
   google_fonts: ^6.2.1
+  camera: ^0.11.0+2 
+  permission_handler: ^11.3.1
+  http: ^1.2.2
+  camera_web: ^0.3.2+3
+
 
 flutter:
  uses-material-design: true
