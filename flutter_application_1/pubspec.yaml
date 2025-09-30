@@ -1,19 +1,43 @@
 name: ethsl_amharic_ui
+description: EthSL → Amharic front end
+version: 0.1.0+1
+
 environment:
   sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.16.0"
 
 dependencies:
-  flutter: 
+  flutter:
     sdk: flutter
-  go_router: ^14.2.0
+
+  # Routing & UI
+  go_router: ^16.2.4
   flutter_svg: ^2.0.10+1
   google_fonts: ^6.2.1
-  camera: ^0.11.0+2 
-  permission_handler: ^11.3.1
-  http: ^1.2.2
-  camera_web: ^0.3.2+3
 
+  # Camera (null-safety / Dart 3 compatible)
+  camera: ^0.11.0+2
+  camera_web: ^0.3.3+4
+
+  # Permissions & platform utils
+  permission_handler: ^12.0.1
+  url_launcher: ^6.3.1
+
+  # Networking
+  http: ^1.2.2
+
+  # File/image picker for Admin uploads
+  file_picker: ^10.3.3
+
+  # WebView (for YouTube embeds on mobile)
+  webview_flutter: ^4.7.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
 
 flutter:
- uses-material-design: true
- 
+  uses-material-design: true
+  # assets:
+  #   - assets/
