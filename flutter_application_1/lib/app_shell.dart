@@ -87,47 +87,131 @@ class _LoadingOverlay extends StatelessWidget {
 }
 
 /// ===============================================================
-/// App Shell
+/// App Shell (responsive AppBar + search)
 /// ===============================================================
 class AppShell extends StatelessWidget {
   const AppShell({super.key, required this.child});
   final Widget child;
 
-  @override
-  Widget build(BuildContext context) {
-    final isWide = MediaQuery.of(context).size.width >= 980;
-    return Scaffold(
-      appBar: AppBar(
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        title: Row(
-          children: [
-            const Text('EthSL', style: TextStyle(fontWeight: FontWeight.w700)),
-            const SizedBox(width: 16),
-            Expanded(
-              child: TextField(
+  void _openSearch(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        final cs = Theme.of(ctx).colorScheme;
+        final isDark = Theme.of(ctx).brightness == Brightness.dark;
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 12,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: cs.outlineVariant,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text('Search',
+                  style: Theme.of(ctx)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8),
+              TextField(
+                autofocus: true,
                 decoration: InputDecoration(
                   hintText: 'Search signs, words, lessons…',
                   prefixIcon: const Icon(Icons.search),
                   filled: true,
-                  fillColor: Theme.of(context)
-                      .colorScheme
-                      .surfaceVariant
-                      .withOpacity(.5),
+                  fillColor: isDark
+                      ? cs.surfaceVariant.withOpacity(.35)
+                      : cs.surfaceVariant,
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
                     borderSide: BorderSide.none,
                   ),
-                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                 ),
+                onSubmitted: (_) => Navigator.pop(ctx),
               ),
-            ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => Navigator.pop(ctx),
+                  icon: const Icon(Icons.close),
+                  label: const Text('Close'),
+                ),
+              )
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final width = MediaQuery.of(context).size.width;
+    final isWide = width >= 980;
+    final showInlineSearch = width >= 700;
+
+    return Scaffold(
+      appBar: AppBar(
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        titleSpacing: 8,
+        title: Row(
+          children: [
+            const Text('EthSL', style: TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(width: 12),
+            if (showInlineSearch)
+              Expanded(
+                child: TextField(
+                  decoration: InputDecoration(
+                    hintText: 'Search signs, words, lessons…',
+                    prefixIcon: const Icon(Icons.search),
+                    filled: true,
+                    fillColor: Theme.of(context)
+                        .colorScheme
+                        .surfaceVariant
+                        .withOpacity(.5),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: BorderSide.none,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                  ),
+                ),
+              )
+            else
+              const Spacer(),
           ],
         ),
-        actions: const [
-          SizedBox(width: 8),
-          _UserMenu(),
-          SizedBox(width: 8),
+        actions: [
+          if (!showInlineSearch)
+            IconButton(
+              tooltip: 'Search',
+              onPressed: () => _openSearch(context),
+              icon: const Icon(Icons.search),
+            ),
+          const SizedBox(width: 8),
+          const _UserMenu(),
+          const SizedBox(width: 8),
         ],
       ),
       drawer: isWide ? null : const _AppDrawer(),
@@ -304,7 +388,6 @@ class _AppDrawer extends StatelessWidget {
       _Nav('Vocabulary', Icons.grid_view, '/vocab'),
       _Nav('Lessons', Icons.menu_book, '/lessons'),
       _Nav('Quiz', Icons.quiz, '/quiz'),
-      _Nav('Dataset', Icons.video_library, '/dataset'),
       _Nav('Settings', Icons.settings, '/settings'),
     ];
 
@@ -350,7 +433,7 @@ class _Nav {
 }
 
 /// ===============================================================
-/// Account Info Sheet (trimmed)
+/// Account Info Sheet — responsive (draggable + scrollable)
 /// ===============================================================
 Future<void> _showAccountInfo(BuildContext context, User user) async {
   final uid = user.uid;
@@ -373,63 +456,109 @@ Future<void> _showAccountInfo(BuildContext context, User user) async {
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
-    builder: (_) {
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.outlineVariant,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Text('Account info',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleLarge
-                    ?.copyWith(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 12),
-            _kv('Name', name.isEmpty ? '—' : name),
-            _kv('Email', email.isEmpty ? '—' : email),
-            _kv('User type', userType),
-            _kv('Hint', hint.isEmpty ? '—' : hint),
-            _kv('Created', created),
-            _kv('Last sign-in', lastSignIn),
-            const SizedBox(height: 16),
-            Row(
+    builder: (ctx) {
+      return DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.55,
+        minChildSize: 0.45,
+        maxChildSize: 0.9,
+        builder: (_, scrollCtrl) {
+          final isNarrow = MediaQuery.of(ctx).size.width < 480;
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+            child: Column(
               children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
-                    label: const Text('Close'),
+                Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Theme.of(ctx).colorScheme.outlineVariant,
+                    borderRadius: BorderRadius.circular(2),
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(height: 12),
+                Text('Account info',
+                    style: Theme.of(ctx)
+                        .textTheme
+                        .titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w700)),
+                const SizedBox(height: 8),
                 Expanded(
-                  child: FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Theme.of(context).colorScheme.error,
-                      foregroundColor: Theme.of(context).colorScheme.onError,
-                    ),
-                    onPressed: () async {
-                      Navigator.pop(context);
-                      final ok = await _confirmDeleteAccount(context);
-                      if (ok) await _deleteAccountFlow(context);
-                    },
-                    icon: const Icon(Icons.delete_forever),
-                    label: const Text('Delete account'),
+                  child: ListView(
+                    controller: scrollCtrl,
+                    children: [
+                      _kv('Name', name.isEmpty ? '—' : name),
+                      _kv('Email', email.isEmpty ? '—' : email),
+                      _kv('User type', userType),
+                      _kv('Hint', hint.isEmpty ? '—' : hint),
+                      _kv('Created', created),
+                      _kv('Last sign-in', lastSignIn),
+                    ],
                   ),
                 ),
+                const SizedBox(height: 10),
+                if (isNarrow)
+                  Column(
+                    children: [
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () => Navigator.pop(ctx),
+                          icon: const Icon(Icons.close),
+                          label: const Text('Close'),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Theme.of(ctx).colorScheme.error,
+                            foregroundColor: Theme.of(ctx).colorScheme.onError,
+                          ),
+                          onPressed: () async {
+                            Navigator.pop(ctx);
+                            final ok = await _confirmDeleteAccount(ctx);
+                            if (ok) await _deleteAccountFlow(ctx);
+                          },
+                          icon: const Icon(Icons.delete_forever),
+                          label: const Text('Delete account'),
+                        ),
+                      ),
+                    ],
+                  )
+                else
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => Navigator.pop(ctx),
+                          icon: const Icon(Icons.close),
+                          label: const Text('Close'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Theme.of(ctx).colorScheme.error,
+                            foregroundColor: Theme.of(ctx).colorScheme.onError,
+                          ),
+                          onPressed: () async {
+                            Navigator.pop(ctx);
+                            final ok = await _confirmDeleteAccount(ctx);
+                            if (ok) await _deleteAccountFlow(ctx);
+                          },
+                          icon: const Icon(Icons.delete_forever),
+                          label: const Text('Delete account'),
+                        ),
+                      ),
+                    ],
+                  ),
               ],
             ),
-          ],
-        ),
+          );
+        },
       );
     },
   );
@@ -614,6 +743,7 @@ Future<String?> _promptPassword(BuildContext context) async {
 
 /// ===============================================================
 /// Edit Profile Page (password fields hidden until clicked)
+/// + keyboard-safe padding + narrow width cap
 /// ===============================================================
 class EditProfilePage extends StatefulWidget {
   const EditProfilePage({super.key});
@@ -794,7 +924,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    // --- FIXED AVATAR: conditional onForegroundImageError only if image exists
+    // Avatar handling
     final user = FirebaseAuth.instance.currentUser;
     final photoUrl = user?.photoURL;
     final bool hasImg = photoUrl != null && photoUrl.isNotEmpty;
@@ -812,12 +942,14 @@ class _EditProfilePageState extends State<EditProfilePage> {
             LayoutBuilder(
               builder: (context, constraints) {
                 final double w = constraints.maxWidth;
-                final double maxW = w < 480.0 ? w - 24.0 : 560.0;
+                final double maxW =
+                    w < 600.0 ? w - 24.0 : 560.0; // tighter on phones
                 return Center(
                   child: ConstrainedBox(
                     constraints: BoxConstraints(maxWidth: maxW),
                     child: SingleChildScrollView(
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                      padding: EdgeInsets.fromLTRB(16, 16, 16,
+                          MediaQuery.of(context).viewInsets.bottom + 24),
                       child: Form(
                         key: _formKey,
                         child: Column(
