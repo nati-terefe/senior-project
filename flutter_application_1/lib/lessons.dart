@@ -7,11 +7,12 @@ import 'dart:ui_web' as ui;
 import 'dart:html' as html;
 
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class LessonsScreen extends StatelessWidget {
   const LessonsScreen({super.key});
 
-  /// Letters and video IDs grouped into 6 units.
+  /// Letters and video IDs grouped into 6 units (your original data).
   static final List<List<String>> lettersByUnit = [
     ['A', 'B', 'C', 'D'],
     ['E', 'F', 'G', 'H'],
@@ -28,7 +29,7 @@ class LessonsScreen extends StatelessWidget {
     ['tnEXOxu8DeQ', 'IidbDW47psg', 'IxKKgEHElnY', 'N7EMD6cW9QU'],
     // Unit 3: I–L
     ['yVa_ARg-xKs', '7_QS8eYcZ1M', 'BqFTAuBRsjE', 'fgmlI1R8s7s'],
-    // Unit 4: M–P/Q  -> shown as M–Q
+    // Unit 4: M–P/Q -> shown as M–Q
     ['dKmuuzSrggk', 'U3hZzMB17Z8', 'FjrhQvSfSjE', 'nYZo0w9XJhM'],
     // Unit 5: R–U
     ['lIpCHp3V5Do', 'i5GRs-jBUVQ', 'yscvNCapzE8', '3PZRau8NEUY'],
@@ -36,8 +37,40 @@ class LessonsScreen extends StatelessWidget {
     ['mKFTCcNwMAo', 'y3FGR_0Uv0c'],
   ];
 
-  /// Make a clean range label like "A–D", "M–Q", "V–Z" even if the
-  /// last item is "P/Q" or "X/Y/Z".
+  /// Seed Firestore once with the above data (idempotent).
+  Future<void> _ensureSeeded() async {
+    final unitsCol = FirebaseFirestore.instance.collection('units');
+
+    // Quick check: do we already have units?
+    final existing = await unitsCol.limit(1).get();
+    if (existing.docs.isNotEmpty) return; // already seeded
+
+    // Create units and lessons.
+    for (int i = 0; i < videoIdsByUnit.length; i++) {
+      final unitName = 'Unit ${i + 1}';
+      final doc = await unitsCol.add({
+        'name': unitName,
+        'normalizedName': unitName.toLowerCase(),
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      final letters = lettersByUnit[i];
+      final ids = videoIdsByUnit[i];
+      for (int j = 0; j < ids.length; j++) {
+        final title = letters[j];
+        final vid = ids[j];
+        await doc.collection('lessons').add({
+          'title': title,
+          'normalizedTitle': title.toLowerCase(),
+          'videoUrl': 'https://www.youtube.com/watch?v=$vid',
+          'normalizedUrl': 'https://www.youtube.com/watch?v=$vid'.toLowerCase(),
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+    }
+  }
+
+  /// Make a clean range label like "A–D", "M–Q", "V–Z" even if the last is "P/Q" or "X/Y/Z".
   static String _compactRange(List<String> letters) {
     if (letters.isEmpty) return '';
     String first = _firstAlpha(letters.first).toUpperCase();
@@ -58,31 +91,181 @@ class LessonsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final unitsCol = FirebaseFirestore.instance.collection('units');
+
     return _ScaffoldPad(
       title: 'Lessons to master sign language',
-      child: ListView.separated(
-        padding: const EdgeInsets.all(12),
-        itemBuilder: (_, i) {
-          final letters = lettersByUnit[i];
-          return ListTile(
-            leading: CircleAvatar(child: Text('${i + 1}')),
-            title: Text('Unit ${i + 1}: ${_compactRange(letters)}'),
-            trailing: FilledButton.tonal(
-              onPressed: () {
-                Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => LessonPlayerScreen(
-                    unitIndex: i,
-                    letters: letters,
-                    videoIds: videoIdsByUnit[i],
-                  ),
-                ));
-              },
-              child: const Text('Start'),
-            ),
+      child: FutureBuilder<void>(
+        future: _ensureSeeded(),
+        builder: (context, seedSnap) {
+          if (seedSnap.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          // Stream units after seeding
+          return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: unitsCol.orderBy('createdAt').snapshots(),
+            builder: (context, snap) {
+              if (snap.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              final docs = snap.data?.docs ?? [];
+
+              if (docs.isEmpty) {
+                // Fallback: if somehow no data, show static list (not expected after seed)
+                return ListView.separated(
+                  padding: const EdgeInsets.all(12),
+                  itemBuilder: (_, i) {
+                    final letters = lettersByUnit[i];
+                    return _UnitTileStatic(
+                      unitIndex: i,
+                      letters: letters,
+                      videoIds: videoIdsByUnit[i],
+                    );
+                  },
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemCount: videoIdsByUnit.length,
+                );
+              }
+
+              // Responsive + smooth on mobile (no nested scrollables)
+              return ListView.separated(
+                padding: const EdgeInsets.all(12),
+                itemBuilder: (_, i) {
+                  final unit = docs[i];
+                  final name = (unit.data()['name'] ?? 'Unit').toString();
+                  return _UnitTileFirestore(unitId: unit.id, unitName: name);
+                },
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemCount: docs.length,
+              );
+            },
           );
         },
-        separatorBuilder: (_, __) => const Divider(height: 1),
-        itemCount: videoIdsByUnit.length,
+      ),
+    );
+  }
+}
+
+/// A tile that loads lessons from Firestore then navigates with lists (keeps your player unchanged).
+class _UnitTileFirestore extends StatelessWidget {
+  const _UnitTileFirestore({required this.unitId, required this.unitName});
+  final String unitId;
+  final String unitName;
+
+  @override
+  Widget build(BuildContext context) {
+    final unitsCol = FirebaseFirestore.instance.collection('units');
+    return ListTile(
+      leading: const CircleAvatar(child: Icon(Icons.menu_book)),
+      title: Text(unitName, overflow: TextOverflow.ellipsis),
+      trailing: FilledButton.tonal(
+        onPressed: () async {
+          // Fetch lessons for this unit (ordered)
+          final q = await unitsCol
+              .doc(unitId)
+              .collection('lessons')
+              .orderBy('createdAt')
+              .get();
+
+          if (q.docs.isEmpty) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('No lessons in this unit yet.')),
+            );
+            return;
+          }
+
+          // Build lists for the player
+          final letters = <String>[];
+          final videoIds = <String>[];
+          for (final d in q.docs) {
+            final data = d.data();
+            final t = (data['title'] ?? '').toString();
+            final u = (data['videoUrl'] ?? '').toString();
+            final id = _extractYouTubeId(u);
+            if (t.isNotEmpty && id.isNotEmpty) {
+              letters.add(t);
+              videoIds.add(id);
+            }
+          }
+
+          if (letters.isEmpty || videoIds.isEmpty) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Lessons are missing video links.')),
+            );
+            return;
+          }
+
+          // Range like A–D
+          final title = 'Unit ${_unitNumberFromName(unitName)}: '
+              '${LessonsScreen._compactRange(letters)}';
+
+          // Navigate using the same LessonPlayerScreen (no structural changes)
+          // unitIndex is inferred from name; if not parsable, send 0 (cosmetic)
+          Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => LessonPlayerScreen(
+              unitIndex: _unitNumberFromName(unitName) - 1,
+              letters: letters,
+              videoIds: videoIds,
+            ),
+          ));
+        },
+        child: const Text('Start'),
+      ),
+    );
+  }
+
+  static int _unitNumberFromName(String name) {
+    final m = RegExp(r'(\d+)').firstMatch(name);
+    if (m != null) {
+      return int.tryParse(m.group(1) ?? '1') ?? 1;
+    }
+    return 1;
+  }
+
+  static String _extractYouTubeId(String url) {
+    final u = url.trim();
+    final patterns = [
+      RegExp(r'youtu\.be/([A-Za-z0-9\-_]{6,})'),
+      RegExp(r'v=([A-Za-z0-9\-_]{6,})'),
+      RegExp(r'embed/([A-Za-z0-9\-_]{6,})'),
+    ];
+    for (final p in patterns) {
+      final m = p.firstMatch(u);
+      if (m != null) return m.group(1)!;
+    }
+    return '';
+  }
+}
+
+/// Fallback tile using your in-code arrays (only used if Firestore is empty).
+class _UnitTileStatic extends StatelessWidget {
+  const _UnitTileStatic({
+    required this.unitIndex,
+    required this.letters,
+    required this.videoIds,
+  });
+  final int unitIndex;
+  final List<String> letters;
+  final List<String> videoIds;
+
+  @override
+  Widget build(BuildContext context) {
+    final range = LessonsScreen._compactRange(letters);
+    return ListTile(
+      leading: CircleAvatar(child: Text('${unitIndex + 1}')),
+      title: Text('Unit ${unitIndex + 1}: $range'),
+      trailing: FilledButton.tonal(
+        onPressed: () {
+          Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => LessonPlayerScreen(
+              unitIndex: unitIndex,
+              letters: letters,
+              videoIds: videoIds,
+            ),
+          ));
+        },
+        child: const Text('Start'),
       ),
     );
   }
@@ -180,11 +363,9 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen> {
           'Unit ${widget.unitIndex + 1}: $unitRange • ${_currentLabel} (${_index + 1}/$total)',
       child: LayoutBuilder(
         builder: (context, constraints) {
-          // Rough space the controls + chips need below the player.
-          const reservedForControls = 170.0; // back btn + spacing + row + chips
-          // If we have enough vertical room, use a fixed (no-scroll) layout.
-          final canFitWithoutScroll = constraints.maxHeight >=
-              reservedForControls + 180.0; // ~min player
+          const reservedForControls = 170.0;
+          final canFitWithoutScroll =
+              constraints.maxHeight >= reservedForControls + 180.0;
 
           Widget playerSizedBox(double height) => SizedBox(
                 width: double.infinity,
@@ -236,7 +417,6 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen> {
               );
 
           if (canFitWithoutScroll) {
-            // Compute a player height that respects 16:9 and never exceeds available space.
             final width = constraints.maxWidth;
             final idealHeight = width / (16 / 9);
             final maxAllowed = constraints.maxHeight - reservedForControls;
@@ -259,7 +439,6 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen> {
               ],
             );
           } else {
-            // Fallback: allow scrolling, but hide scrollbars for a cleaner feel.
             return ScrollConfiguration(
               behavior:
                   ScrollConfiguration.of(context).copyWith(scrollbars: false),
@@ -277,7 +456,6 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    // In scroll mode we can just use AspectRatio for simplicity.
                     AspectRatio(
                       aspectRatio: 16 / 9,
                       child: ClipRRect(
@@ -311,19 +489,21 @@ class _ScaffoldPad extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(
-          title,
-          style: Theme.of(context)
-              .textTheme
-              .headlineSmall!
-              .copyWith(fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 16),
-        Expanded(child: child),
-      ]),
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(
+            title,
+            style: Theme.of(context)
+                .textTheme
+                .headlineSmall!
+                .copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 16),
+          Expanded(child: child),
+        ]),
+      ),
     );
   }
 }
