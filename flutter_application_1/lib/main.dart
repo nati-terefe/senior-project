@@ -2,8 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'routes.dart';
 import 'theme_controller.dart';
+//Firebase
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
 
-void main() => runApp(const EthSLApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+  runApp(const EthSLApp());
+}
 
 class EthSLApp extends StatefulWidget {
   const EthSLApp({super.key});
@@ -27,7 +36,8 @@ class _EthSLAppState extends State<EthSLApp> {
         elevation: 0,
         margin: EdgeInsets.all(12),
         shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.all(Radius.circular(18))),
+          borderRadius: BorderRadius.all(Radius.circular(18)),
+        ),
       ),
     );
 
@@ -35,7 +45,6 @@ class _EthSLAppState extends State<EthSLApp> {
       useMaterial3: true,
       colorScheme:
           ColorScheme.fromSeed(seedColor: seed, brightness: Brightness.dark),
-      // make all text white in dark mode
       textTheme: GoogleFonts.interTextTheme().apply(
         bodyColor: Colors.white,
         displayColor: Colors.white,
@@ -44,10 +53,13 @@ class _EthSLAppState extends State<EthSLApp> {
         elevation: 0,
         margin: EdgeInsets.all(12),
         shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.all(Radius.circular(18))),
+          borderRadius: BorderRadius.all(Radius.circular(18)),
+        ),
       ),
       listTileTheme: const ListTileThemeData(
-          textColor: Colors.white, iconColor: Colors.white),
+        textColor: Colors.white,
+        iconColor: Colors.white,
+      ),
     );
 
     return ThemeControllerProvider(
@@ -60,7 +72,7 @@ class _EthSLAppState extends State<EthSLApp> {
           theme: light,
           darkTheme: dark,
           themeMode: _theme.isDark ? ThemeMode.dark : ThemeMode.light,
-          routerConfig: router, // or buildRouter() if that's what you expose
+          routerConfig: router,
         ),
       ),
     );

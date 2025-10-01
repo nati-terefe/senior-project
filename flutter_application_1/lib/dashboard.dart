@@ -15,6 +15,9 @@ class DashboardScreen extends StatelessWidget {
       _Feature('Lessons', 'Units & progress', Icons.menu_book, '/lessons'),
       _Feature(
           'Dataset', 'Record & label signs', Icons.video_library, '/dataset'),
+// for testing, i hv delted it
+      _Feature('Admin', 'Manage vocab & settings', Icons.admin_panel_settings,
+          '/admin'),
     ];
 
     return Padding(
