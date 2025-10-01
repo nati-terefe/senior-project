@@ -12,64 +12,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class LessonsScreen extends StatelessWidget {
   const LessonsScreen({super.key});
 
-  /// Letters and video IDs grouped into 6 units (your original data).
-  static final List<List<String>> lettersByUnit = [
-    ['A', 'B', 'C', 'D'],
-    ['E', 'F', 'G', 'H'],
-    ['I', 'J', 'K', 'L'],
-    ['M', 'N', 'O', 'P/Q'],
-    ['R', 'S', 'T', 'U'],
-    ['V/W', 'X/Y/Z'],
-  ];
-
-  static final List<List<String>> videoIdsByUnit = [
-    // Unit 1: A–D
-    ['rGK4KZ1Kro0', 'lljcDn1sCPw', 'jFIqV04G4Bc', 'aoiNumzoIVI'],
-    // Unit 2: E–H
-    ['tnEXOxu8DeQ', 'IidbDW47psg', 'IxKKgEHElnY', 'N7EMD6cW9QU'],
-    // Unit 3: I–L
-    ['yVa_ARg-xKs', '7_QS8eYcZ1M', 'BqFTAuBRsjE', 'fgmlI1R8s7s'],
-    // Unit 4: M–P/Q -> shown as M–Q
-    ['dKmuuzSrggk', 'U3hZzMB17Z8', 'FjrhQvSfSjE', 'nYZo0w9XJhM'],
-    // Unit 5: R–U
-    ['lIpCHp3V5Do', 'i5GRs-jBUVQ', 'yscvNCapzE8', '3PZRau8NEUY'],
-    // Unit 6: V/W–X/Y/Z -> shown as V–Z
-    ['mKFTCcNwMAo', 'y3FGR_0Uv0c'],
-  ];
-
-  /// Seed Firestore once with the above data (idempotent).
-  Future<void> _ensureSeeded() async {
-    final unitsCol = FirebaseFirestore.instance.collection('units');
-
-    // Quick check: do we already have units?
-    final existing = await unitsCol.limit(1).get();
-    if (existing.docs.isNotEmpty) return; // already seeded
-
-    // Create units and lessons.
-    for (int i = 0; i < videoIdsByUnit.length; i++) {
-      final unitName = 'Unit ${i + 1}';
-      final doc = await unitsCol.add({
-        'name': unitName,
-        'normalizedName': unitName.toLowerCase(),
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-
-      final letters = lettersByUnit[i];
-      final ids = videoIdsByUnit[i];
-      for (int j = 0; j < ids.length; j++) {
-        final title = letters[j];
-        final vid = ids[j];
-        await doc.collection('lessons').add({
-          'title': title,
-          'normalizedTitle': title.toLowerCase(),
-          'videoUrl': 'https://www.youtube.com/watch?v=$vid',
-          'normalizedUrl': 'https://www.youtube.com/watch?v=$vid'.toLowerCase(),
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-      }
-    }
-  }
-
   /// Make a clean range label like "A–D", "M–Q", "V–Z" even if the last is "P/Q" or "X/Y/Z".
   static String _compactRange(List<String> letters) {
     if (letters.isEmpty) return '';
@@ -95,51 +37,33 @@ class LessonsScreen extends StatelessWidget {
 
     return _ScaffoldPad(
       title: 'Lessons to master sign language',
-      child: FutureBuilder<void>(
-        future: _ensureSeeded(),
-        builder: (context, seedSnap) {
-          if (seedSnap.connectionState == ConnectionState.waiting) {
+      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: unitsCol.orderBy('createdAt').snapshots(),
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
+          final docs = snap.data?.docs ?? [];
 
-          // Stream units after seeding
-          return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: unitsCol.orderBy('createdAt').snapshots(),
-            builder: (context, snap) {
-              if (snap.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              final docs = snap.data?.docs ?? [];
+          if (docs.isEmpty) {
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('No units yet'),
+              ),
+            );
+          }
 
-              if (docs.isEmpty) {
-                // Fallback: if somehow no data, show static list (not expected after seed)
-                return ListView.separated(
-                  padding: const EdgeInsets.all(12),
-                  itemBuilder: (_, i) {
-                    final letters = lettersByUnit[i];
-                    return _UnitTileStatic(
-                      unitIndex: i,
-                      letters: letters,
-                      videoIds: videoIdsByUnit[i],
-                    );
-                  },
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemCount: videoIdsByUnit.length,
-                );
-              }
-
-              // Responsive + smooth on mobile (no nested scrollables)
-              return ListView.separated(
-                padding: const EdgeInsets.all(12),
-                itemBuilder: (_, i) {
-                  final unit = docs[i];
-                  final name = (unit.data()['name'] ?? 'Unit').toString();
-                  return _UnitTileFirestore(unitId: unit.id, unitName: name);
-                },
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemCount: docs.length,
-              );
+          // Responsive, smooth on mobile (no nested scrollables)
+          return ListView.separated(
+            padding: const EdgeInsets.all(12),
+            itemBuilder: (_, i) {
+              final unit = docs[i];
+              final name = (unit.data()['name'] ?? 'Unit').toString();
+              return _UnitTileFirestore(unitId: unit.id, unitName: name);
             },
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemCount: docs.length,
           );
         },
       ),
@@ -147,7 +71,7 @@ class LessonsScreen extends StatelessWidget {
   }
 }
 
-/// A tile that loads lessons from Firestore then navigates with lists (keeps your player unchanged).
+/// Unit tile that loads lessons from Firestore then navigates with lists.
 class _UnitTileFirestore extends StatelessWidget {
   const _UnitTileFirestore({required this.unitId, required this.unitName});
   final String unitId;
@@ -156,6 +80,7 @@ class _UnitTileFirestore extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final unitsCol = FirebaseFirestore.instance.collection('units');
+
     return ListTile(
       leading: const CircleAvatar(child: Icon(Icons.menu_book)),
       title: Text(unitName, overflow: TextOverflow.ellipsis),
@@ -196,12 +121,7 @@ class _UnitTileFirestore extends StatelessWidget {
             return;
           }
 
-          // Range like A–D
-          final title = 'Unit ${_unitNumberFromName(unitName)}: '
-              '${LessonsScreen._compactRange(letters)}';
-
-          // Navigate using the same LessonPlayerScreen (no structural changes)
-          // unitIndex is inferred from name; if not parsable, send 0 (cosmetic)
+          // Navigate using the same player (cosmetic unit index from name if possible)
           Navigator.of(context).push(MaterialPageRoute(
             builder: (_) => LessonPlayerScreen(
               unitIndex: _unitNumberFromName(unitName) - 1,
@@ -227,7 +147,7 @@ class _UnitTileFirestore extends StatelessWidget {
     final u = url.trim();
     final patterns = [
       RegExp(r'youtu\.be/([A-Za-z0-9\-_]{6,})'),
-      RegExp(r'v=([A-Za-z0-9\-_]{6,})'),
+      RegExp(r'[?&]v=([A-Za-z0-9\-_]{6,})'),
       RegExp(r'embed/([A-Za-z0-9\-_]{6,})'),
     ];
     for (final p in patterns) {
@@ -235,39 +155,6 @@ class _UnitTileFirestore extends StatelessWidget {
       if (m != null) return m.group(1)!;
     }
     return '';
-  }
-}
-
-/// Fallback tile using your in-code arrays (only used if Firestore is empty).
-class _UnitTileStatic extends StatelessWidget {
-  const _UnitTileStatic({
-    required this.unitIndex,
-    required this.letters,
-    required this.videoIds,
-  });
-  final int unitIndex;
-  final List<String> letters;
-  final List<String> videoIds;
-
-  @override
-  Widget build(BuildContext context) {
-    final range = LessonsScreen._compactRange(letters);
-    return ListTile(
-      leading: CircleAvatar(child: Text('${unitIndex + 1}')),
-      title: Text('Unit ${unitIndex + 1}: $range'),
-      trailing: FilledButton.tonal(
-        onPressed: () {
-          Navigator.of(context).push(MaterialPageRoute(
-            builder: (_) => LessonPlayerScreen(
-              unitIndex: unitIndex,
-              letters: letters,
-              videoIds: videoIds,
-            ),
-          ));
-        },
-        child: const Text('Start'),
-      ),
-    );
   }
 }
 
