@@ -1,3 +1,6 @@
+// app_shell.dart
+import 'dart:async'; // <-- for Timer
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -25,6 +28,13 @@ void _showSnack(BuildContext context, String msg, {IconData? icon}) {
   messenger
     ?..clearSnackBars()
     ..showSnackBar(_snack(msg, icon: icon));
+}
+
+/// Defer navigation to the next frame (prevents web white screens / lifecycle asserts)
+void _safeGo(BuildContext context, String location) {
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (context.mounted) GoRouter.of(context).go(location);
+  });
 }
 
 /// Glassy loading overlay
@@ -101,65 +111,7 @@ class AppShell extends StatelessWidget {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) {
-        final cs = Theme.of(ctx).colorScheme;
-        final isDark = Theme.of(ctx).brightness == Brightness.dark;
-        return Padding(
-          padding: EdgeInsets.only(
-            left: 16,
-            right: 16,
-            top: 12,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: cs.outlineVariant,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text('Search',
-                  style: Theme.of(ctx)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(fontWeight: FontWeight.w700)),
-              const SizedBox(height: 8),
-              TextField(
-                autofocus: true,
-                decoration: InputDecoration(
-                  hintText: 'Search signs, words, lessons…',
-                  prefixIcon: const Icon(Icons.search),
-                  filled: true,
-                  fillColor: isDark
-                      ? cs.surfaceVariant.withOpacity(.35)
-                      : cs.surfaceVariant,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    borderSide: BorderSide.none,
-                  ),
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                ),
-                onSubmitted: (_) => Navigator.pop(ctx),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: () => Navigator.pop(ctx),
-                  icon: const Icon(Icons.close),
-                  label: const Text('Close'),
-                ),
-              )
-            ],
-          ),
-        );
-      },
+      builder: (ctx) => const _LessonSearchSheet(),
     );
   }
 
@@ -180,21 +132,28 @@ class AppShell extends StatelessWidget {
             const SizedBox(width: 12),
             if (showInlineSearch)
               Expanded(
-                child: TextField(
-                  decoration: InputDecoration(
-                    hintText: 'Search signs, words, lessons…',
-                    prefixIcon: const Icon(Icons.search),
-                    filled: true,
-                    fillColor: Theme.of(context)
-                        .colorScheme
-                        .surfaceVariant
-                        .withOpacity(.5),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(16),
-                      borderSide: BorderSide.none,
+                child: InkWell(
+                  onTap: () => _openSearch(context),
+                  borderRadius: BorderRadius.circular(16),
+                  child: IgnorePointer(
+                    ignoring: true,
+                    child: TextField(
+                      decoration: InputDecoration(
+                        hintText: 'Search units or lessons…',
+                        prefixIcon: const Icon(Icons.search),
+                        filled: true,
+                        fillColor: Theme.of(context)
+                            .colorScheme
+                            .surfaceVariant
+                            .withOpacity(.5),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 12),
+                      ),
                     ),
-                    contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 12),
                   ),
                 ),
               )
@@ -231,6 +190,339 @@ class AppShell extends StatelessWidget {
   }
 }
 
+/// ---------- Search sheet: Units + Lessons ----------
+class _LessonSearchSheet extends StatefulWidget {
+  const _LessonSearchSheet();
+
+  @override
+  State<_LessonSearchSheet> createState() => _LessonSearchSheetState();
+}
+
+class _LessonSearchSheetState extends State<_LessonSearchSheet> {
+  final _ctrl = TextEditingController();
+  final _focus = FocusNode();
+  Timer? _debounce;
+  bool _loading = false;
+  List<_SearchHit> _hits = [];
+
+  // Turn search tips (index hints) ON/OFF globally
+  static const bool _SHOW_SEARCH_TIPS = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _focus.requestFocus());
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _ctrl.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  void _onChanged(String q) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 240), () => _run(q));
+    setState(() {}); // update clear button visibility
+  }
+
+  /// Try an indexed prefix search on any of [fields]; if that fails (missing index),
+  /// we do a small client-side filter as a graceful fallback.
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _prefixTry(
+    Query<Map<String, dynamic>> colOrGroup,
+    List<String> fields,
+    String q, {
+    int limit = 20,
+    void Function(String msg)? onIndexHint,
+  }) async {
+    for (final f in fields) {
+      try {
+        final snap = await colOrGroup
+            .orderBy(f)
+            .startAt([q])
+            .endAt(['$q\uf8ff'])
+            .limit(limit)
+            .get();
+        return snap.docs;
+      } catch (e) {
+        onIndexHint?.call('Consider an index on “$f” for faster search.');
+      }
+    }
+
+    try {
+      final snap = await colOrGroup.limit(50).get();
+      final lowerQ = q.toLowerCase();
+      final filtered = snap.docs
+          .where((d) {
+            final m = d.data();
+            for (final f in fields) {
+              final raw = (m[f] ?? m[f.replaceAll('normalized', 'title')] ?? '')
+                  .toString();
+              if (raw.toLowerCase().startsWith(lowerQ)) return true;
+            }
+            final alt =
+                (m['name'] ?? m['title'] ?? '').toString().toLowerCase();
+            return alt.startsWith(lowerQ);
+          })
+          .take(limit)
+          .toList();
+      return filtered;
+    } catch (_) {
+      return <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+    }
+  }
+
+  /// Optional keywords search (arrayContainsAny on tokens)
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _keywordTry(
+    Query<Map<String, dynamic>> colOrGroup,
+    List<String> tokens, {
+    int limit = 20,
+  }) async {
+    if (tokens.isEmpty) return [];
+    try {
+      final snap = await colOrGroup
+          .where('keywords', arrayContainsAny: tokens.take(10).toList())
+          .limit(limit)
+          .get();
+      return snap.docs;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> _run(String raw) async {
+    final q = raw.trim().toLowerCase();
+    if (q.isEmpty) {
+      setState(() {
+        _hits = [];
+        _loading = false;
+      });
+      return;
+    }
+
+    setState(() => _loading = true);
+
+    final unitsCol = FirebaseFirestore.instance.collection('units');
+    final lessonsGroup = FirebaseFirestore.instance.collectionGroup('lessons');
+
+    final tokens =
+        q.split(RegExp(r'\s+')).where((t) => t.isNotEmpty).take(10).toList();
+
+    String? firstHint;
+
+    // 1) Units
+    final unitPrefixDocs = await _prefixTry(
+      unitsCol,
+      const ['normalizedName', 'nameLower', 'name'],
+      q,
+      limit: 12,
+      onIndexHint:
+          _SHOW_SEARCH_TIPS ? (msg) => firstHint ??= 'Units: $msg' : null,
+    );
+    final unitKwDocs = await _keywordTry(unitsCol, tokens, limit: 12);
+
+    // 2) Lessons (collection group)
+    final lessonPrefixDocs = await _prefixTry(
+      lessonsGroup,
+      const ['normalizedTitle', 'titleLower', 'title'],
+      q,
+      limit: 24,
+      onIndexHint:
+          _SHOW_SEARCH_TIPS ? (msg) => firstHint ??= 'Lessons: $msg' : null,
+    );
+    final lessonKwDocs = await _keywordTry(lessonsGroup, tokens, limit: 24);
+
+    // Map → hits
+    final hits = <_SearchHit>[
+      ...unitPrefixDocs.map(_mapUnitDoc),
+      ...unitKwDocs.map(_mapUnitDoc),
+      ...lessonPrefixDocs.map(_mapLessonDoc),
+      ...lessonKwDocs.map(_mapLessonDoc),
+    ];
+
+    // De-dup
+    final seen = <String>{};
+    final deduped = <_SearchHit>[];
+    for (final h in hits) {
+      if (seen.add(h.uniqueKey)) deduped.add(h);
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _hits = deduped;
+      _loading = false;
+    });
+
+    if (_SHOW_SEARCH_TIPS && firstHint != null) {
+      _showSnack(context, firstHint!, icon: Icons.info_outline);
+    }
+  }
+
+  _SearchHit _mapUnitDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    final data = d.data();
+    final name = (data['name'] ?? '').toString();
+    final title = name.isEmpty ? d.id : name;
+    final route = '/lessons/${d.id}'; // Unit page
+    return _SearchHit(
+      uniqueKey: d.reference.path,
+      title: title,
+      subtitle: 'Unit',
+      route: route,
+      kind: _HitKind.unit,
+    );
+  }
+
+  _SearchHit _mapLessonDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    final data = d.data();
+    final title = (data['title'] ?? '').toString();
+    final normalizedTitle = (data['normalizedTitle'] ?? '').toString();
+
+    // Path like: units/<unitId>/lessons/<lessonId>
+    final parts = d.reference.path.split('/');
+    String unitId = '';
+    String lessonId = d.id;
+    if (parts.length >= 4) {
+      unitId = parts[1];
+      lessonId = parts[3];
+    }
+
+    final route = '/lessons/$unitId/$lessonId'; // Lesson page
+
+    return _SearchHit(
+      uniqueKey: d.reference.path,
+      title: title.isEmpty
+          ? (normalizedTitle.isEmpty ? lessonId : normalizedTitle)
+          : title,
+      subtitle: 'Lesson',
+      route: route,
+      kind: _HitKind.lesson,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 16,
+        right: 16,
+        top: 12,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 36,
+            height: 4,
+            decoration: BoxDecoration(
+              color: cs.outlineVariant,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Search units & lessons',
+            style: Theme.of(context)
+                .textTheme
+                .titleLarge
+                ?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _ctrl,
+            focusNode: _focus,
+            autofocus: true,
+            textInputAction: TextInputAction.search,
+            onChanged: _onChanged,
+            onSubmitted: _run,
+            decoration: InputDecoration(
+              hintText: 'Try “Unit 2”, “H”, …',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: _ctrl.text.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () {
+                        _ctrl.clear();
+                        _onChanged('');
+                      },
+                    ),
+              filled: true,
+              fillColor: isDark
+                  ? cs.surfaceVariant.withOpacity(.35)
+                  : cs.surfaceVariant,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: BorderSide.none,
+              ),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            ),
+          ),
+          const SizedBox(height: 10),
+          if (_loading) const LinearProgressIndicator(),
+          Flexible(
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                for (final h in _hits)
+                  ListTile(
+                    leading: Icon(h.kind == _HitKind.unit
+                        ? Icons.folder
+                        : Icons.menu_book),
+                    title: Text(h.title),
+                    subtitle: Text(h.subtitle),
+                    onTap: () {
+                      Navigator.pop(context); // close sheet
+                      _safeGo(context, h.route);
+                    },
+                  ),
+                if (!_loading && _hits.isEmpty)
+                  const ListTile(
+                    leading: Icon(Icons.search_off),
+                    title: Text('No matches found'),
+                    subtitle: Text('Try another keyword (e.g., “Unit 1”).'),
+                  ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                    label: const Text('Close'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+enum _HitKind { unit, lesson }
+
+class _SearchHit {
+  final String uniqueKey;
+  final String title;
+  final String subtitle;
+  final String route;
+  final _HitKind kind;
+  _SearchHit({
+    required this.uniqueKey,
+    required this.title,
+    required this.subtitle,
+    required this.route,
+    required this.kind,
+  });
+}
+
 class _UserMenu extends StatelessWidget {
   const _UserMenu();
 
@@ -258,12 +550,11 @@ class _UserMenu extends StatelessWidget {
       builder: (context, snap) {
         final user = snap.data;
 
-        // Not signed in → simple avatar to /auth
         if (user == null) {
           return Padding(
             padding: const EdgeInsets.only(right: 12.0),
             child: InkWell(
-              onTap: () => context.go('/auth'),
+              onTap: () => _safeGo(context, '/auth'),
               borderRadius: BorderRadius.circular(30),
               child: CircleAvatar(
                 backgroundColor: cs.primaryContainer,
@@ -283,8 +574,7 @@ class _UserMenu extends StatelessWidget {
         if (photoUrl != null && photoUrl.isNotEmpty) {
           avatarChild = CircleAvatar(
             foregroundImage: NetworkImage(photoUrl),
-            onForegroundImageError:
-                (_, __) {}, // safe: only present when image provided
+            onForegroundImageError: (_, __) {},
             backgroundColor: cs.primaryContainer,
             foregroundColor: cs.onPrimaryContainer,
             child: Text(initials),
@@ -314,7 +604,7 @@ class _UserMenu extends StatelessWidget {
                   );
                   break;
                 case _UserAction.signOut:
-                  await FirebaseAuth.instance.signOut(); // stream rebuilds UI
+                  await FirebaseAuth.instance.signOut();
                   _showSnack(context, 'Signed out.');
                   break;
               }
@@ -380,11 +670,71 @@ class _AppDrawer extends StatelessWidget {
   const _AppDrawer({this.permanent = false});
   final bool permanent;
 
+// Intercept protected routes, prompt login using ROOT navigator, and always close drawer
+  Future<void> _goOrPrompt(BuildContext context, String path) async {
+    // Close the drawer if it's the temporary one
+    if (!permanent && Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    }
+
+    // Normalize translate alias
+    final normalizedPath = (path == '/translate') ? '/instant_translate' : path;
+
+    // Which routes require login?
+    final requiresLogin = normalizedPath == '/instant_translate' ||
+        normalizedPath.startsWith('/lessons') ||
+        normalizedPath.startsWith('/quiz');
+
+    if (requiresLogin) {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        // Friendly feature name for the dialog title/body
+        String featureName = 'this feature';
+        if (normalizedPath == '/instant_translate')
+          featureName = 'Instant Translate';
+        else if (normalizedPath.startsWith('/lessons'))
+          featureName = 'Lessons';
+        else if (normalizedPath.startsWith('/quiz')) featureName = 'Quiz';
+
+        final wantsLogin = await showDialog<bool>(
+          context: context,
+          useRootNavigator: true,
+          barrierDismissible: false,
+          builder: (_) => AlertDialog(
+            title: const Text('Sign in required'),
+            content: Text('You need to be signed in to use $featureName.'),
+            actions: [
+              TextButton(
+                onPressed: () =>
+                    Navigator.of(_, rootNavigator: true).pop(false), // Cancel
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () =>
+                    Navigator.of(_, rootNavigator: true).pop(true), // Login
+                child: const Text('Login'),
+              ),
+            ],
+          ),
+        );
+
+        if (wantsLogin == true) {
+          _safeGo(context, '/auth');
+        }
+        // Cancel/no → do nothing
+        return;
+      }
+    }
+
+    // Signed in or not protected → go
+    _safeGo(context, normalizedPath);
+  }
+
   @override
   Widget build(BuildContext context) {
     final nav = [
       _Nav('Home', Icons.home, '/'),
-      _Nav('Instant Translate', Icons.camera_alt, '/translate'),
+      _Nav('Instant Translate', Icons.camera_alt, '/instant_translate'),
       _Nav('Vocabulary', Icons.grid_view, '/vocab'),
       _Nav('Lessons', Icons.menu_book, '/lessons'),
       _Nav('Quiz', Icons.quiz, '/quiz'),
@@ -410,7 +760,7 @@ class _AppDrawer extends StatelessWidget {
             ListTile(
               leading: Icon(n.icon),
               title: Text(n.label),
-              onTap: () => context.go(n.path),
+              onTap: () => _goOrPrompt(context, n.path),
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12)),
             ),
@@ -681,7 +1031,6 @@ Future<bool> _reauthenticateForDeletion(BuildContext context, User user) async {
 
   if (providers.contains('google.com')) {
     try {
-      // Web popup try; on mobile this will throw and we ask to re-sign-in.
       try {
         final google = GoogleAuthProvider();
         await user.reauthenticateWithPopup(google);
@@ -742,8 +1091,7 @@ Future<String?> _promptPassword(BuildContext context) async {
 }
 
 /// ===============================================================
-/// Edit Profile Page (password fields hidden until clicked)
-/// + keyboard-safe padding + narrow width cap
+/// Edit Profile Page (unchanged)
 /// ===============================================================
 class EditProfilePage extends StatefulWidget {
   const EditProfilePage({super.key});
@@ -758,7 +1106,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
   final _emailCtrl = TextEditingController(); // read-only
   final _hintCtrl = TextEditingController();
 
-  // Change password fields
   final _pwCurrentCtrl = TextEditingController();
   final _pwNewCtrl = TextEditingController();
   final _pwConfirmCtrl = TextEditingController();
@@ -860,7 +1207,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
     final email = user.email ?? '';
 
     if (!_providers.contains('password') || email.isEmpty) {
-      // Google-only: send setup link
       try {
         setState(() => _changingPassword = true);
         await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
@@ -877,7 +1223,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
       return;
     }
 
-    // Validate fields
     final current = _pwCurrentCtrl.text.trim();
     final newPw = _pwNewCtrl.text.trim();
     final confirm = _pwConfirmCtrl.text.trim();
@@ -924,7 +1269,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    // Avatar handling
     final user = FirebaseAuth.instance.currentUser;
     final photoUrl = user?.photoURL;
     final bool hasImg = photoUrl != null && photoUrl.isNotEmpty;
@@ -942,14 +1286,17 @@ class _EditProfilePageState extends State<EditProfilePage> {
             LayoutBuilder(
               builder: (context, constraints) {
                 final double w = constraints.maxWidth;
-                final double maxW =
-                    w < 600.0 ? w - 24.0 : 560.0; // tighter on phones
+                final double maxW = w < 600.0 ? w - 24.0 : 560.0;
                 return Center(
                   child: ConstrainedBox(
                     constraints: BoxConstraints(maxWidth: maxW),
                     child: SingleChildScrollView(
-                      padding: EdgeInsets.fromLTRB(16, 16, 16,
-                          MediaQuery.of(context).viewInsets.bottom + 24),
+                      padding: EdgeInsets.fromLTRB(
+                        16,
+                        16,
+                        16,
+                        MediaQuery.of(context).viewInsets.bottom + 24,
+                      ),
                       child: Form(
                         key: _formKey,
                         child: Column(
@@ -978,7 +1325,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
                               ],
                             ),
                             const SizedBox(height: 16),
-
                             Text('Name',
                                 style: Theme.of(context).textTheme.titleMedium),
                             const SizedBox(height: 6),
@@ -990,7 +1336,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
                                   : null,
                             ),
                             const SizedBox(height: 12),
-
                             Text('Email',
                                 style: Theme.of(context).textTheme.titleMedium),
                             const SizedBox(height: 6),
@@ -1006,7 +1351,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
                               ),
                             ),
                             const SizedBox(height: 12),
-
                             Text('Recovery hint',
                                 style: Theme.of(context).textTheme.titleMedium),
                             const SizedBox(height: 6),
@@ -1015,7 +1359,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
                               decoration:
                                   _deco('Used to verify password reset'),
                             ),
-
                             const SizedBox(height: 20),
                             FilledButton.icon(
                               onPressed: _saving ? null : _saveProfile,
@@ -1023,15 +1366,11 @@ class _EditProfilePageState extends State<EditProfilePage> {
                               label: const Text('Save changes'),
                             ),
                             const SizedBox(height: 16),
-
                             Divider(color: cs.outlineVariant),
                             const SizedBox(height: 8),
-
-                            // ----- Change Password Section -----
                             Text('Change password',
                                 style: Theme.of(context).textTheme.titleMedium),
                             const SizedBox(height: 8),
-
                             if (_providers.contains('password')) ...[
                               if (!_showPwFields)
                                 OutlinedButton.icon(
@@ -1120,7 +1459,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
                                 ),
                               ],
                             ] else ...[
-                              // No password provider -> offer setup email
                               OutlinedButton.icon(
                                 onPressed:
                                     _changingPassword ? null : _changePassword,
@@ -1129,12 +1467,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
                                     'Email me a password setup link'),
                               ),
                             ],
-
                             const SizedBox(height: 16),
                             Divider(color: cs.outlineVariant),
                             const SizedBox(height: 8),
-
-                            // Bottom delete button (top icon removed)
                             FilledButton.icon(
                               style: FilledButton.styleFrom(
                                 backgroundColor: cs.error,

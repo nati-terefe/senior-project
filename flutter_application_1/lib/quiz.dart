@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 class QuizScreen extends StatefulWidget {
@@ -18,7 +20,12 @@ class _QuizScreenState extends State<QuizScreen> {
   bool _showAnswer = false;
   bool _finished = false;
 
-  // SAFE restart: defer state reset to avoid asserts
+  // randomization seed per session
+  final int _seed = DateTime.now().millisecondsSinceEpoch;
+  late final Random _rng = Random(_seed);
+  List<QueryDocumentSnapshot<Map<String, dynamic>>>? _sessionOrder;
+
+  // SAFE restart
   void _reset(int total) {
     Future.microtask(() {
       if (!mounted) return;
@@ -41,6 +48,23 @@ class _QuizScreenState extends State<QuizScreen> {
     });
   }
 
+  Future<void> _saveLastResult(int score, int total) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final ref = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('meta')
+        .doc('quiz');
+
+    await ref.set({
+      'lastScore': score,
+      'lastTotal': total,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
   void _next(int total) {
     if (_qIndex + 1 < total) {
       setState(() {
@@ -50,12 +74,15 @@ class _QuizScreenState extends State<QuizScreen> {
       });
     } else {
       setState(() => _finished = true);
+      _saveLastResult(_score, total);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final quizzes = FirebaseFirestore.instance.collection('quizzes');
+
+    final user = FirebaseAuth.instance.currentUser;
 
     return _ScaffoldPad(
       title: 'Quiz',
@@ -65,6 +92,7 @@ class _QuizScreenState extends State<QuizScreen> {
           if (snap.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
+
           final docs = snap.data?.docs ?? [];
           if (docs.isEmpty) {
             return const Center(
@@ -75,9 +103,11 @@ class _QuizScreenState extends State<QuizScreen> {
             );
           }
 
-          final total = docs.length;
+          // randomize order once per session
+          _sessionOrder ??= [...docs]..shuffle(_rng);
+          final total = _sessionOrder!.length;
           final idx = _qIndex.clamp(0, total - 1);
-          final data = docs[idx].data();
+          final data = _sessionOrder![idx].data();
 
           Uint8List? imgBytes;
           final b64 = (data['imageBase64'] ?? '').toString();
@@ -106,6 +136,7 @@ class _QuizScreenState extends State<QuizScreen> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      if (user != null) _LastResultBanner(user: user),
                       Row(
                         children: [
                           Expanded(
@@ -129,7 +160,7 @@ class _QuizScreenState extends State<QuizScreen> {
                       // Image
                       ConstrainedBox(
                         constraints: BoxConstraints(
-                          maxHeight: kIsWeb ? 220 : 320, // 👈 smaller on web
+                          maxHeight: kIsWeb ? 220 : 320,
                           maxWidth: double.infinity,
                         ),
                         child: Container(
@@ -146,7 +177,7 @@ class _QuizScreenState extends State<QuizScreen> {
                                   borderRadius: BorderRadius.circular(16),
                                   child: Image.memory(
                                     imgBytes,
-                                    fit: BoxFit.contain, // keep smaller fit
+                                    fit: BoxFit.contain,
                                     width: double.infinity,
                                     height: double.infinity,
                                     gaplessPlayback: true,
@@ -313,6 +344,91 @@ class _ChoicesGrid extends StatelessWidget {
         },
       );
     });
+  }
+}
+
+/* -------------------- Last result banner -------------------- */
+class _LastResultBanner extends StatelessWidget {
+  const _LastResultBanner({required this.user, super.key});
+  final User user;
+
+  @override
+  Widget build(BuildContext context) {
+    final docRef = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('meta')
+        .doc('quiz');
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: docRef.snapshots(),
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const SizedBox.shrink();
+        }
+
+        final data = snap.data?.data();
+        final cs = Theme.of(context).colorScheme;
+
+        BoxDecoration deco() => BoxDecoration(
+              color: cs.surfaceVariant.withOpacity(.6),
+              borderRadius: BorderRadius.circular(12),
+            );
+
+        if (data == null) {
+          return Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: deco(),
+            child: Row(
+              children: const [
+                Icon(Icons.emoji_events_outlined),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'No previous quiz result yet — take your first quiz and your score will appear here.',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        final int? lastScore = (data['lastScore'] as num?)?.toInt();
+        final int? lastTotal = (data['lastTotal'] as num?)?.toInt();
+        final ts = data['updatedAt'];
+        String when = '';
+        if (ts is Timestamp) {
+          final dt = ts.toDate();
+          when =
+              '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
+              '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+        }
+
+        return Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: deco(),
+          child: Row(
+            children: [
+              const Icon(Icons.history_edu_outlined),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Last result: $lastScore / $lastTotal${when.isEmpty ? '' : ' • $when'}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 }
 

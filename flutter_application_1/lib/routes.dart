@@ -1,51 +1,166 @@
 // routes.dart
+import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import './app_shell.dart';
 import './dashboard.dart';
-import './instant_translate.dart';
+import './instant_translate.dart'; // your screen file
 import './vocabulary.dart';
 import './lessons.dart';
 import './quiz.dart';
 import './dataset.dart';
 import './settings.dart';
 import './admin.dart';
+import './auth.dart'; // LoginSignup
 
-// 👇 import your auth UI (use the actual file where LoginSignup lives)
-import './auth.dart'; // contains `LoginSignup`
+// ---------------- RequireAuth gate ----------------
+class RequireAuth extends StatefulWidget {
+  const RequireAuth({
+    super.key,
+    required this.child,
+    this.dialogTitle = 'Sign in required',
+    this.dialogMessage = 'You need to be signed in to use Instant Translate.',
+  });
 
+  final Widget child;
+  final String dialogTitle;
+  final String dialogMessage;
+
+  @override
+  State<RequireAuth> createState() => _RequireAuthState();
+}
+
+class _RequireAuthState extends State<RequireAuth> {
+  bool _checked = false;
+  bool _allowed = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _maybeAsk();
+  }
+
+  Future<void> _maybeAsk() async {
+    if (_checked) return;
+    _checked = true;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      // Already authed → allow directly
+      setState(() => _allowed = true);
+      return;
+    }
+
+    // Not authed → ask
+    final wantsLogin = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        title: Text(widget.dialogTitle),
+        content: Text(widget.dialogMessage),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Login'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted) return;
+
+    if (wantsLogin == true) {
+      context.go('/auth');
+    } else {
+      // Cancel → leave/return home
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      } else {
+        context.go('/');
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _allowed
+        ? widget.child
+        : const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+  }
+}
+
+// ---------------- Router ----------------
 final GoRouter router = GoRouter(
   initialLocation: '/',
   routes: [
-    // ------ Auth (no AppShell) ------
-    GoRoute(
-      path: '/auth',
-      builder: (_, __) => const LoginSignup(), // ✅ Correct target
-    ),
+    // Standalone (outside shell)
+    GoRoute(path: '/auth', builder: (_, __) => const LoginSignup()),
+    GoRoute(path: '/admin', builder: (_, __) => const AdminScreen()),
 
-    // ------ Admin (no AppShell) ------
-    GoRoute(
-      path: '/admin',
-      builder: (_, __) => const AdminScreen(),
-      // Optional: simple guard pattern (uncomment when you wire auth)
-      // redirect: (context, state) {
-      //   final user = FirebaseAuth.instance.currentUser;
-      //   if (user == null) return '/auth';
-      //   return null;
-      // },
-    ),
-
-    // ------ Client app inside AppShell ------
+    // App shell (sidebar/topbar etc.)
     ShellRoute(
       builder: (context, state, child) => AppShell(child: child),
       routes: [
         GoRoute(path: '/', builder: (_, __) => const DashboardScreen()),
+
+        // Protected: Instant Translate
         GoRoute(
-            path: '/translate',
-            builder: (_, __) => const InstantTranslateScreen()),
+          path: '/instant_translate',
+          builder: (_, __) => const RequireAuth(
+            child: InstantTranslateScreen(),
+          ),
+        ),
+
+        // Back-compat alias: /translate → /instant_translate
+        GoRoute(
+          path: '/translate',
+          redirect: (_, __) => '/instant_translate',
+        ),
+
         GoRoute(path: '/vocab', builder: (_, __) => const VocabularyScreen()),
-        GoRoute(path: '/lessons', builder: (_, __) => const LessonsScreen()),
-        GoRoute(path: '/quiz', builder: (_, __) => const QuizScreen()),
+
+        // --- Protected: Lessons (list / unit / unit+lesson) ---
+        GoRoute(
+          path: '/lessons',
+          builder: (_, __) => const RequireAuth(
+            dialogMessage: 'You need to be signed in to use Lessons.',
+            child: LessonsScreen(),
+          ),
+        ),
+        GoRoute(
+          path: '/lessons/:unitId',
+          builder: (_, state) => RequireAuth(
+            dialogMessage: 'You need to be signed in to use Lessons.',
+            child: LessonsScreen(unitId: state.pathParameters['unitId']!),
+          ),
+        ),
+        GoRoute(
+          path: '/lessons/:unitId/:lessonId',
+          builder: (_, state) => RequireAuth(
+            dialogMessage: 'You need to be signed in to use Lessons.',
+            child: LessonsScreen(
+              unitId: state.pathParameters['unitId']!,
+              lessonId: state.pathParameters['lessonId']!,
+            ),
+          ),
+        ),
+
+        // --- Protected: Quiz ---
+        GoRoute(
+          path: '/quiz',
+          builder: (_, __) => const RequireAuth(
+            dialogMessage: 'You need to be signed in to use Quiz.',
+            child: QuizScreen(),
+          ),
+        ),
+
         GoRoute(path: '/dataset', builder: (_, __) => const DatasetScreen()),
         GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
       ],
