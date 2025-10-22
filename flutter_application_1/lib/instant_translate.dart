@@ -7,9 +7,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
+import 'dart:io' show Platform; // to know the platform its using
 
 /* ===================== CONFIG ===================== */
-const String kWsUrl = 'ws://localhost:8000/ws/predict'; // FastAPI WS endpoint
+String get kWsUrl {
+  if (kIsWeb) return 'ws://localhost:8000/ws/predict';
+  if (Platform.isAndroid)
+    return 'ws://10.0.2.2:8000/ws/predict'; // emulator → host
+  return 'ws://localhost:8000/ws/predict'; // iOS sim / desktop
+} // FastAPI WS endpoint
+
 const double kDefaultHoldTimeSec = 0.8; // initial hold time
 const int kFpsMs = 200; // ~5 FPS
 /* =================================================== */
@@ -171,27 +178,32 @@ class _InstantTranslateScreenState extends State<InstantTranslateScreen>
       _log('Already connected');
       return;
     }
-    _log('Connecting to WebSocket…');
-    final ch = WebSocketChannel.connect(Uri.parse(kWsUrl));
-    _ws = ch;
-    _connected = true;
-    setState(() {});
-    _log('WebSocket connected');
+    try {
+      _log('Connecting to $kWsUrl …');
+      final ch = WebSocketChannel.connect(Uri.parse(kWsUrl));
+      _ws = ch;
+      _connected = true;
+      setState(() {});
+      _log('WebSocket connected');
 
-    ch.stream.listen(
-      _onWsMessage,
-      onError: (e) {
-        _log('WS error: $e');
-        _connected = false;
-        setState(() {});
-      },
-      onDone: () {
-        _log('WebSocket closed');
-        _connected = false;
-        _ws = null;
-        setState(() {});
-      },
-    );
+      ch.stream.listen(
+        _onWsMessage,
+        onError: (e) {
+          _log('WS error: $e');
+          _connected = false;
+          _ws = null;
+          setState(() {});
+        },
+        onDone: () {
+          _log('WebSocket closed');
+          _connected = false;
+          _ws = null;
+          setState(() {});
+        },
+      );
+    } catch (e) {
+      _log('Connect failed: $e');
+    }
   }
 
   void _disconnect() {

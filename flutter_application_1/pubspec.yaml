@@ -45,5 +45,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  # assets:
-  #   - assets/
+  assets:
+    - assets/images/quiz_banner.jpg

@@ -5,16 +5,19 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import './app_shell.dart';
 import './dashboard.dart';
-import './instant_translate.dart'; // your screen file
+import './instant_translate.dart';
 import './vocabulary.dart';
 import './lessons.dart';
 import './quiz.dart';
 import './dataset.dart';
 import './settings.dart';
 import './admin.dart';
-import './auth.dart'; // LoginSignup
+import './auth.dart';
+import './about_us.dart';
+import './faq_page.dart';
+import './contact_us.dart';
 
-// ---------------- RequireAuth gate ----------------
+/// ---------------- RequireAuth gate ----------------
 class RequireAuth extends StatefulWidget {
   const RequireAuth({
     super.key,
@@ -47,25 +50,26 @@ class _RequireAuthState extends State<RequireAuth> {
 
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      // Already authed → allow directly
+      if (!mounted) return;
       setState(() => _allowed = true);
       return;
     }
 
-    // Not authed → ask
+    // Use ROOT navigator and pop with the dialog's own context.
     final wantsLogin = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => AlertDialog(
+      useRootNavigator: true,
+      builder: (dialogCtx) => AlertDialog(
         title: Text(widget.dialogTitle),
         content: Text(widget.dialogMessage),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(dialogCtx, false),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => Navigator.pop(dialogCtx, true),
             child: const Text('Login'),
           ),
         ],
@@ -75,13 +79,18 @@ class _RequireAuthState extends State<RequireAuth> {
     if (!mounted) return;
 
     if (wantsLogin == true) {
-      context.go('/auth');
+      // Defer navigation to next frame to avoid lifecycle asserts/white flashes.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.go('/auth');
+      });
     } else {
       // Cancel → leave/return home
       if (Navigator.of(context).canPop()) {
         Navigator.of(context).pop();
       } else {
-        context.go('/');
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) context.go('/');
+        });
       }
     }
   }
@@ -90,13 +99,11 @@ class _RequireAuthState extends State<RequireAuth> {
   Widget build(BuildContext context) {
     return _allowed
         ? widget.child
-        : const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
+        : const Scaffold(body: Center(child: CircularProgressIndicator()));
   }
 }
 
-// ---------------- Router ----------------
+/// ---------------- Router ----------------
 final GoRouter router = GoRouter(
   initialLocation: '/',
   routes: [
@@ -163,6 +170,9 @@ final GoRouter router = GoRouter(
 
         GoRoute(path: '/dataset', builder: (_, __) => const DatasetScreen()),
         GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
+        GoRoute(path: '/about', builder: (_, __) => const AboutUsPage()),
+        GoRoute(path: '/faq', builder: (_, __) => const FaqPage()),
+        GoRoute(path: '/contact', builder: (_, __) => const ContactUsPage()),
       ],
     ),
   ],

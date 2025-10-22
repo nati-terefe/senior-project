@@ -10,6 +10,21 @@ import 'package:go_router/go_router.dart';
 import 'theme_controller.dart';
 
 /* ============================
+   Safe navigation helper
+   ============================ */
+
+extension _SafeGo on BuildContext {
+  /// Schedule navigation to the next frame to avoid lifecycle asserts/white flashes.
+  void safeGo(String location) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final el = this as Element;
+      if (!el.mounted) return;
+      GoRouter.of(this).go(location);
+    });
+  }
+}
+
+/* ============================
    Small helpers
    ============================ */
 
@@ -85,6 +100,7 @@ class _AdminScreenState extends State<AdminScreen> {
       UsersAdmin(),
       VocabularyAdmin(),
       QuizzesAdmin(),
+      MessagesAdmin(),
       AdminSettings(),
     ];
 
@@ -105,6 +121,8 @@ class _AdminScreenState extends State<AdminScreen> {
                 icon: Icon(Icons.grid_view), label: Text('Vocabulary')),
             NavigationRailDestination(
                 icon: Icon(Icons.quiz), label: Text('Quizzes')),
+            NavigationRailDestination(
+                icon: Icon(Icons.mail_outline), label: Text('Messages')),
             NavigationRailDestination(
                 icon: Icon(Icons.settings), label: Text('Settings')),
           ],
@@ -143,6 +161,8 @@ class _AdminScreenState extends State<AdminScreen> {
                     NavigationDestination(
                         icon: Icon(Icons.quiz), label: 'Quizzes'),
                     NavigationDestination(
+                        icon: Icon(Icons.mail_outline), label: 'Messages'),
+                    NavigationDestination(
                         icon: Icon(Icons.settings), label: 'Settings'),
                   ],
                 ),
@@ -166,10 +186,13 @@ class _LessonsAdminState extends State<LessonsAdmin>
     with TickerProviderStateMixin {
   final _units = FirebaseFirestore.instance.collection('units');
   final _unitName = TextEditingController(text: 'Unit 1');
+  String? _unitCategory; // NEW: selected category for new unit
 
   // per-unit inputs (so each expanded unit has its own controllers)
   final Map<String, TextEditingController> _titleCtrls = {};
   final Map<String, TextEditingController> _urlCtrls = {};
+  final Map<String, String?> _lessonCategory =
+      {}; // NEW: per-unit lesson category
 
   int? _expandedIndex;
   bool _busy = false;
@@ -178,11 +201,17 @@ class _LessonsAdminState extends State<LessonsAdmin>
       _titleCtrls.putIfAbsent(id, () => TextEditingController());
   TextEditingController _urlCtrlFor(String id) =>
       _urlCtrls.putIfAbsent(id, () => TextEditingController());
+  String? _lessonCatFor(String id) => _lessonCategory[id];
 
   Future<void> _addUnit() async {
     final name = _unitName.text.trim();
+    final category = _unitCategory?.trim();
     if (name.isEmpty) {
       _toast(context, 'Unit name is required', icon: Icons.error_outline);
+      return;
+    }
+    if (category == null || category.isEmpty) {
+      _toast(context, 'Select a category', icon: Icons.error_outline);
       return;
     }
     final norm = name.toLowerCase();
@@ -197,33 +226,58 @@ class _LessonsAdminState extends State<LessonsAdmin>
       await _units.add({
         'name': name,
         'normalizedName': norm,
+        'category': category,
+        'normalizedCategory': category.toLowerCase(),
         'createdAt': FieldValue.serverTimestamp(),
       });
       _unitName.text = 'Unit ${DateTime.now().millisecondsSinceEpoch % 1000}';
+      _unitCategory = null;
+      setState(() {});
       _toast(context, 'Unit added', icon: Icons.check_circle_outline);
     } catch (_) {
       _toast(context, 'Failed to add unit', icon: Icons.error_outline);
     }
   }
 
-  Future<void> _renameUnit(String id, String current) async {
+  Future<void> _renameUnit(
+      String id, String current, String? currentCat) async {
     final c = TextEditingController(text: current);
+    String category = currentCat ?? '';
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Edit unit name'),
-        content: TextField(
-          controller: c,
-          decoration: const InputDecoration(hintText: 'Unit name'),
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          title: const Text('Edit unit'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: c,
+                  decoration: const InputDecoration(hintText: 'Unit name'),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: category.isEmpty ? null : category,
+                  decoration: const InputDecoration(labelText: 'Category'),
+                  items: const [
+                    DropdownMenuItem(value: 'english', child: Text('English')),
+                    DropdownMenuItem(value: 'amharic', child: Text('Amharic')),
+                  ],
+                  onChanged: (v) => setS(() => category = v ?? ''),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Save')),
+          ],
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel')),
-          FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Save')),
-        ],
       ),
     );
     if (ok != true) return;
@@ -231,6 +285,10 @@ class _LessonsAdminState extends State<LessonsAdmin>
     final newName = c.text.trim();
     if (newName.isEmpty) {
       _toast(context, 'Unit name cannot be empty', icon: Icons.error_outline);
+      return;
+    }
+    if (category.isEmpty) {
+      _toast(context, 'Select a category', icon: Icons.error_outline);
       return;
     }
     final norm = newName.toLowerCase();
@@ -244,7 +302,12 @@ class _LessonsAdminState extends State<LessonsAdmin>
     }
 
     try {
-      await _units.doc(id).update({'name': newName, 'normalizedName': norm});
+      await _units.doc(id).update({
+        'name': newName,
+        'normalizedName': norm,
+        'category': category,
+        'normalizedCategory': category.toLowerCase(),
+      });
       _toast(context, 'Updated', icon: Icons.check_circle_outline);
     } catch (_) {
       _toast(context, 'Failed to update', icon: Icons.error_outline);
@@ -266,6 +329,7 @@ class _LessonsAdminState extends State<LessonsAdmin>
       await _units.doc(id).delete();
       _titleCtrls.remove(id)?.dispose();
       _urlCtrls.remove(id)?.dispose();
+      _lessonCategory.remove(id);
       _toast(context, 'Unit deleted', icon: Icons.check_circle_outline);
     } catch (_) {
       _toast(context, 'Failed to delete', icon: Icons.error_outline);
@@ -277,6 +341,7 @@ class _LessonsAdminState extends State<LessonsAdmin>
   Future<void> _addLessonTo(String unitId) async {
     final t = _titleCtrlFor(unitId).text.trim();
     final u = _urlCtrlFor(unitId).text.trim();
+    final cat = _lessonCatFor(unitId)?.trim();
 
     if (t.isEmpty) {
       _toast(context, 'Lesson title is required', icon: Icons.error_outline);
@@ -284,6 +349,10 @@ class _LessonsAdminState extends State<LessonsAdmin>
     }
     if (!_looksLikeYoutubeUrl(u)) {
       _toast(context, 'Enter a valid YouTube URL', icon: Icons.error_outline);
+      return;
+    }
+    if (cat == null || cat.isEmpty) {
+      _toast(context, 'Select a lesson category', icon: Icons.error_outline);
       return;
     }
 
@@ -312,48 +381,65 @@ class _LessonsAdminState extends State<LessonsAdmin>
         'normalizedTitle': nt,
         'videoUrl': u,
         'normalizedUrl': nu,
+        'category': cat,
+        'normalizedCategory': cat.toLowerCase(),
         'createdAt': FieldValue.serverTimestamp(),
       });
       _titleCtrlFor(unitId).clear();
       _urlCtrlFor(unitId).clear();
+      _lessonCategory[unitId] = null;
+      setState(() {});
       _toast(context, 'Lesson added', icon: Icons.check_circle_outline);
     } catch (_) {
       _toast(context, 'Failed to add lesson', icon: Icons.error_outline);
     }
   }
 
-  Future<void> _editLesson(
-      String unitId, String lessonId, String title, String url) async {
+  Future<void> _editLesson(String unitId, String lessonId, String title,
+      String url, String? cat) async {
     final t = TextEditingController(text: title);
     final u = TextEditingController(text: url);
+    String category = (cat ?? '').trim();
 
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Edit lesson'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                  controller: t,
-                  decoration: const InputDecoration(
-                      labelText: 'Title (e.g. A, B, P/Q)')),
-              TextField(
-                  controller: u,
-                  decoration:
-                      const InputDecoration(labelText: 'Video URL (YouTube)')),
-            ],
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          title: const Text('Edit lesson'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                    controller: t,
+                    decoration: const InputDecoration(
+                        labelText: 'Title (e.g. A, B, P/Q)')),
+                TextField(
+                    controller: u,
+                    decoration: const InputDecoration(
+                        labelText: 'Video URL (YouTube)')),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: category.isEmpty ? null : category,
+                  decoration: const InputDecoration(labelText: 'Category'),
+                  items: const [
+                    DropdownMenuItem(value: 'english', child: Text('English')),
+                    DropdownMenuItem(value: 'amharic', child: Text('Amharic')),
+                  ],
+                  onChanged: (v) => setS(() => category = v ?? ''),
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel')),
+            FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Save')),
+          ],
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel')),
-          FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Save')),
-        ],
       ),
     );
     if (ok != true) return;
@@ -366,6 +452,10 @@ class _LessonsAdminState extends State<LessonsAdmin>
     }
     if (!_looksLikeYoutubeUrl(nu)) {
       _toast(context, 'Enter a valid YouTube URL', icon: Icons.error_outline);
+      return;
+    }
+    if (category.isEmpty) {
+      _toast(context, 'Select a category', icon: Icons.error_outline);
       return;
     }
 
@@ -393,6 +483,8 @@ class _LessonsAdminState extends State<LessonsAdmin>
         'normalizedTitle': ntLower,
         'videoUrl': nu,
         'normalizedUrl': nuLower,
+        'category': category,
+        'normalizedCategory': category.toLowerCase(),
       });
       _toast(context, 'Updated', icon: Icons.check_circle_outline);
     } catch (_) {
@@ -456,6 +548,17 @@ class _LessonsAdminState extends State<LessonsAdmin>
                             ),
                           ),
                         ),
+                        DropdownButton<String>(
+                          value: _unitCategory,
+                          hint: const Text('Select category'),
+                          items: const [
+                            DropdownMenuItem(
+                                value: 'english', child: Text('English')),
+                            DropdownMenuItem(
+                                value: 'amharic', child: Text('Amharic')),
+                          ],
+                          onChanged: (v) => setState(() => _unitCategory = v),
+                        ),
                         FilledButton.icon(
                           onPressed: _busy ? null : _addUnit,
                           icon: const Icon(Icons.add),
@@ -477,6 +580,7 @@ class _LessonsAdminState extends State<LessonsAdmin>
               final i = index - 1;
               final unit = docs[i];
               final name = (unit.data()['name'] ?? 'Unit').toString();
+              final cat = (unit.data()['category'] ?? '—').toString();
               final expanded = _expandedIndex == i;
 
               // Narrow-safe add-lesson row
@@ -511,6 +615,22 @@ class _LessonsAdminState extends State<LessonsAdmin>
                   ),
                 );
 
+                final categoryDrop = Padding(
+                  padding: const EdgeInsets.only(right: 8, bottom: 8),
+                  child: DropdownButton<String>(
+                    value: _lessonCategory[unit.id],
+                    hint: const Text('Category'),
+                    items: const [
+                      DropdownMenuItem(
+                          value: 'english', child: Text('English')),
+                      DropdownMenuItem(
+                          value: 'amharic', child: Text('Amharic')),
+                    ],
+                    onChanged: (v) =>
+                        setState(() => _lessonCategory[unit.id] = v),
+                  ),
+                );
+
                 final addBtn = Padding(
                   padding: const EdgeInsets.only(bottom: 8),
                   child: FilledButton.tonalIcon(
@@ -523,13 +643,19 @@ class _LessonsAdminState extends State<LessonsAdmin>
                 if (isWide) {
                   return Row(children: [
                     Expanded(flex: 4, child: titleFieldCore),
-                    Expanded(flex: 7, child: urlFieldCore),
+                    Expanded(flex: 6, child: urlFieldCore),
+                    categoryDrop,
                     addBtn,
                   ]);
                 }
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [titleFieldCore, urlFieldCore, addBtn],
+                  children: [
+                    titleFieldCore,
+                    urlFieldCore,
+                    categoryDrop,
+                    addBtn
+                  ],
                 );
               }
 
@@ -562,6 +688,8 @@ class _LessonsAdminState extends State<LessonsAdmin>
                           Builder(builder: (__) {
                             final d = ldocs[j];
                             final data = d.data();
+                            final lessonCat =
+                                (data['category'] ?? '—').toString();
                             return ListTile(
                               key: ValueKey('lesson-${d.id}'),
                               dense: true,
@@ -571,7 +699,7 @@ class _LessonsAdminState extends State<LessonsAdmin>
                                 overflow: TextOverflow.ellipsis,
                               ),
                               subtitle: Text(
-                                (data['videoUrl'] ?? '').toString(),
+                                '${(data['videoUrl'] ?? '').toString()}  •  ${lessonCat.toUpperCase()}',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
@@ -585,6 +713,7 @@ class _LessonsAdminState extends State<LessonsAdmin>
                                       d.id,
                                       (data['title'] ?? '').toString(),
                                       (data['videoUrl'] ?? '').toString(),
+                                      (data['category'] ?? '').toString(),
                                     ),
                                     icon: const Icon(Icons.edit_outlined),
                                   ),
@@ -614,13 +743,13 @@ class _LessonsAdminState extends State<LessonsAdmin>
                 initiallyExpanded: expanded,
                 onExpansionChanged: (e) =>
                     setState(() => _expandedIndex = e ? i : null),
-                title: Text(name),
+                title: Text('$name (${cat.toUpperCase()})'),
                 trailing: Wrap(
                   spacing: 4,
                   children: [
                     IconButton(
                       tooltip: 'Edit unit name',
-                      onPressed: () => _renameUnit(unit.id, name),
+                      onPressed: () => _renameUnit(unit.id, name, cat),
                       icon: const Icon(Icons.edit_outlined),
                     ),
                     IconButton(
@@ -699,7 +828,7 @@ class _UsersAdminState extends State<UsersAdmin> {
       setState(() => _busy = true);
       final primary = Firebase.app();
       final tmp = await Firebase.initializeApp(
-        name: 'admin-helper-${DateTime.now().microsecondsSinceEpoch}',
+        name: 'admin-helper-${DateTime.now().microsecondsSinceEpoch}()',
         options: primary.options,
       );
       final tmpAuth = FirebaseAuth.instanceFor(app: tmp);
@@ -1619,7 +1748,8 @@ class _AdminSettingsState extends State<AdminSettings> {
       await FirebaseFirestore.instance.collection('users').doc(uid).delete();
       if (!mounted) return;
       _toast(context, 'Account deleted', icon: Icons.check_circle_outline);
-      context.go('/auth');
+      // Safe navigation after destructive action
+      context.safeGo('/auth');
     } on FirebaseAuthException catch (e) {
       if (e.code == 'requires-recent-login') {
         _toast(context, 'For security, sign in again, then retry delete.',
@@ -1800,13 +1930,229 @@ class _AdminSettingsState extends State<AdminSettings> {
                         if (!mounted) return;
                         _toast(context, 'Signed out',
                             icon: Icons.logout_outlined);
-                        context.go('/auth');
+                        // Take admin to login page safely
+                        context.safeGo('/auth');
                       } finally {
                         if (mounted) setState(() => _busy = false);
                       }
                     },
               icon: const Icon(Icons.logout),
               label: const Text('Sign out'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/* =============================
+   MESSAGES (from Contact Us)
+   ============================= */
+
+class MessagesAdmin extends StatefulWidget {
+  const MessagesAdmin({super.key});
+  @override
+  State<MessagesAdmin> createState() => _MessagesAdminState();
+}
+
+class _MessagesAdminState extends State<MessagesAdmin> {
+  final _col = FirebaseFirestore.instance.collection('contact_messages');
+  final _searchCtrl = TextEditingController();
+  bool _onlyOpen = false; // show only status=open
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _toggleStatus(String id, String current) async {
+    final next = (current == 'resolved') ? 'open' : 'resolved';
+    try {
+      await _col.doc(id).update({'status': next});
+      if (mounted) _toast(context, 'Marked as $next', icon: Icons.flag_circle);
+    } catch (_) {
+      if (mounted)
+        _toast(context, 'Failed to update', icon: Icons.error_outline);
+    }
+  }
+
+  Future<void> _delete(String id) async {
+    final ok = await _confirm(
+      context,
+      title: 'Delete this message?',
+      message: 'This cannot be undone.',
+    );
+    if (!ok) return;
+    try {
+      await _col.doc(id).delete();
+      if (mounted) _toast(context, 'Deleted', icon: Icons.check_circle_outline);
+    } catch (_) {
+      if (mounted)
+        _toast(context, 'Failed to delete', icon: Icons.error_outline);
+    }
+  }
+
+  String _fmtDate(Timestamp? ts) {
+    if (ts == null) return '—';
+    final d = ts.toDate().toLocal();
+    // Short, readable
+    return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} '
+        '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return _Pad(
+      title: 'Messages • Contact form',
+      child: Column(
+        children: [
+          // --- Filters / Search ---
+          Card(
+            margin: const EdgeInsets.only(bottom: 8),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 420),
+                    child: TextField(
+                      controller: _searchCtrl,
+                      onChanged: (_) => setState(() {}),
+                      decoration: const InputDecoration(
+                        labelText: 'Search (name, email, message)',
+                        prefixIcon: Icon(Icons.search),
+                      ),
+                    ),
+                  ),
+                  FilterChip(
+                    label: const Text('Only open'),
+                    selected: _onlyOpen,
+                    onSelected: (v) => setState(() => _onlyOpen = v),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // --- List (Stream) ---
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _col.orderBy('createdAt', descending: true).snapshots(),
+              builder: (_, snap) {
+                if (snap.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                final docs = snap.data?.docs ?? [];
+                if (docs.isEmpty) {
+                  return const Center(child: Text('No messages yet'));
+                }
+
+                // client-side filter: search + status
+                final q = _searchCtrl.text.trim().toLowerCase();
+                final filtered = docs.where((d) {
+                  final m = d.data();
+                  final status =
+                      (m['status'] ?? 'open').toString().toLowerCase();
+                  if (_onlyOpen && status != 'open') return false;
+
+                  if (q.isEmpty) return true;
+                  final name = (m['name'] ?? '').toString().toLowerCase();
+                  final email = (m['email'] ?? '').toString().toLowerCase();
+                  final msg = (m['message'] ?? '').toString().toLowerCase();
+                  return name.contains(q) ||
+                      email.contains(q) ||
+                      msg.contains(q);
+                }).toList();
+
+                return ListView.separated(
+                  padding: const EdgeInsets.only(bottom: 24),
+                  itemCount: filtered.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final d = filtered[i];
+                    final id = d.id;
+                    final m = d.data();
+
+                    final name = (m['name'] ?? '').toString();
+                    final email = (m['email'] ?? '').toString();
+                    final message = (m['message'] ?? '').toString();
+                    final createdAt = d.data()['createdAt'] as Timestamp?;
+                    final status = (m['status'] ?? 'open').toString();
+
+                    final initials = (() {
+                      final base = name.isNotEmpty ? name : email;
+                      if (base.isEmpty) return 'U';
+                      final parts = base.trim().split(RegExp(r'\s+'));
+                      return parts
+                          .take(2)
+                          .map((p) => p[0].toUpperCase())
+                          .join();
+                    })();
+
+                    final statusColor = status == 'resolved'
+                        ? cs.primaryContainer
+                        : cs.tertiaryContainer;
+
+                    return ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: statusColor,
+                        child: Text(initials),
+                      ),
+                      title: Text(
+                        name.isNotEmpty
+                            ? name
+                            : (email.isNotEmpty ? email : '(no name)'),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 2),
+                          Text(
+                            message,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '${email.isNotEmpty ? email : '—'}  •  ${_fmtDate(createdAt)}  •  ${status.toUpperCase()}',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                      isThreeLine: true,
+                      trailing: Wrap(
+                        spacing: 4,
+                        children: [
+                          IconButton(
+                            tooltip: status == 'resolved'
+                                ? 'Mark open'
+                                : 'Mark resolved',
+                            onPressed: () => _toggleStatus(id, status),
+                            icon: Icon(
+                              status == 'resolved'
+                                  ? Icons.flag_outlined
+                                  : Icons.flag_circle_outlined,
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Delete',
+                            onPressed: () => _delete(id),
+                            icon: const Icon(Icons.delete_outline),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
             ),
           ),
         ],

@@ -128,7 +128,7 @@ class AppShell extends StatelessWidget {
         titleSpacing: 8,
         title: Row(
           children: [
-            const Text('EthSL', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text('STS', style: TextStyle(fontWeight: FontWeight.w700)),
             const SizedBox(width: 12),
             if (showInlineSearch)
               Expanded(
@@ -738,6 +738,9 @@ class _AppDrawer extends StatelessWidget {
       _Nav('Vocabulary', Icons.grid_view, '/vocab'),
       _Nav('Lessons', Icons.menu_book, '/lessons'),
       _Nav('Quiz', Icons.quiz, '/quiz'),
+      _Nav('About', Icons.info_outline, '/about'),
+      _Nav('FAQ', Icons.help_outline, '/faq'),
+      _Nav('Contact', Icons.mail_outline, '/contact'),
       _Nav('Settings', Icons.settings, '/settings'),
     ];
 
@@ -753,7 +756,7 @@ class _AppDrawer extends StatelessWidget {
                   .titleMedium!
                   .copyWith(fontWeight: FontWeight.w700),
             ),
-            subtitle: const Text('Amharic Sign Tools'),
+            subtitle: const Text('Sign to Text/Speech'),
           ),
           const SizedBox(height: 10),
           for (final n in nav)
