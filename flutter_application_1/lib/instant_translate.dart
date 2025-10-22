@@ -253,14 +253,15 @@ class _InstantTranslateScreenState extends State<InstantTranslateScreen>
           if (_processTimes.length > 100) _processTimes.removeAt(0);
         }
 
+        // -------- CHANGE: always store Amharic translation from server --------
         final completed = data['word_completed'] as String?;
         if (completed != null && completed.isNotEmpty) {
-          final amh =
-              _showAmharic ? (data['amharic_translation'] as String?) : null;
+          final amh = data['amharic_translation'] as String?;
           _completed.insert(0, _CompletedWord(word: completed, amharic: amh));
           if (_completed.length > 10) _completed.removeLast();
           _wordsCompleted++;
         }
+        // ---------------------------------------------------------------------
 
         final err = data['error'] as String?;
         if (err != null && err.isNotEmpty) _log('Error: $err');
